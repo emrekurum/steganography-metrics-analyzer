@@ -1,4 +1,12 @@
-"""LSB tabanlı steganografi: gizleme, çıkarma, metrik hesaplama ve grafik üretimi."""
+"""
+LSB tabanlı steganografi analiz motoru.
+
+Bu dosya projenin çekirdek mantığını içerir:
+- Rastgele bit üretimi
+- LSB ile gizleme / çıkarma
+- Kalite metriklerinin hesaplanması
+- Toplu analiz, grafik ve CSV çıktısı
+"""
 
 from __future__ import annotations
 
@@ -12,13 +20,27 @@ import cv2
 import matplotlib.pyplot as plt
 import numpy as np
 
+# Analiz edilecek kapasite yüzdeleri
 CAPACITY_LEVELS = (25, 50, 75, 100)
+
+# Doğrudan işlenecek standart görüntü boyutları (genişlik, yükseklik)
 EXPECTED_SIZES = {(256, 256), (512, 512)}
+
+# Okunabilir dosya uzantıları
 SUPPORTED_EXTENSIONS = {".bmp", ".tiff", ".tif", ".png"}
 
 
 def generate_random_data(capacity: int, rng: np.random.Generator | None = None) -> np.ndarray:
-    """Belirtilen kapasite kadar 0/1 rastgele bit dizisi üretir."""
+    """
+    Gizlenecek rastgele bit verisini üretir.
+
+    Parametreler:
+        capacity: Üretilecek bit sayısı (M x N x 3)
+        rng: Tekrarlanabilir sonuç için isteğe bağlı rastgele sayı üreteci
+
+    Dönüş:
+        0 ve 1 değerlerinden oluşan numpy dizisi
+    """
     if capacity <= 0:
         return np.array([], dtype=np.uint8)
 
@@ -27,7 +49,19 @@ def generate_random_data(capacity: int, rng: np.random.Generator | None = None) 
 
 
 def hide_data(cover_image: np.ndarray, secret_bits: np.ndarray) -> np.ndarray:
-    """24bpp RGB görüntünün tüm kanallarında LSB gizleme uygular."""
+    """
+    LSB gizleme işlemini uygular.
+
+    Her pikselin B, G ve R kanallarının en düşük anlamlı bitine (LSB)
+    secret_bits dizisindeki bitler sırayla yazılır.
+
+    Parametreler:
+        cover_image: 24bpp kapak görüntüsü (H x W x 3)
+        secret_bits: Gizlenecek 0/1 bit dizisi
+
+    Dönüş:
+        Veri gizlenmiş stego görüntüsü
+    """
     if cover_image.ndim != 3 or cover_image.shape[2] != 3:
         raise ValueError("Görüntü 24bpp (H x W x 3) olmalıdır.")
 
@@ -38,8 +72,10 @@ def hide_data(cover_image: np.ndarray, secret_bits: np.ndarray) -> np.ndarray:
         )
 
     stego = cover_image.copy()
+    # Görüntüyü tek boyutlu dizi haline getirerek tüm kanallara sırayla erişiriz
     flat = stego.reshape(-1)
 
+    # 0xFE maskesi ile mevcut LSB temizlenir, ardından yeni bit OR ile yazılır
     mask = np.uint8(0xFE)
     flat[: secret_bits.size] = (flat[: secret_bits.size] & mask) | secret_bits.astype(np.uint8)
 
@@ -47,7 +83,19 @@ def hide_data(cover_image: np.ndarray, secret_bits: np.ndarray) -> np.ndarray:
 
 
 def extract_data(stego_image: np.ndarray, data_length: int) -> np.ndarray:
-    """Stego görüntüden belirtilen uzunlukta LSB verisini çıkarır."""
+    """
+    Stego görüntüden LSB verisini geri çıkarır.
+
+    hide_data ile gizlenen bitler, piksel değerinin son biti (& 1) okunarak elde edilir.
+    Bu fonksiyon doğrulama (extract == original) için kullanılır.
+
+    Parametreler:
+        stego_image: Veri gizlenmiş görüntü
+        data_length: Çıkarılacak bit sayısı
+
+    Dönüş:
+        Çıkarılan 0/1 bit dizisi
+    """
     if stego_image.ndim != 3 or stego_image.shape[2] != 3:
         raise ValueError("Görüntü 24bpp (H x W x 3) olmalıdır.")
 
@@ -62,7 +110,17 @@ def extract_data(stego_image: np.ndarray, data_length: int) -> np.ndarray:
 
 
 def calculate_metrics(cover: np.ndarray, stego: np.ndarray) -> Dict[str, float]:
-    """Kapak ve stego görüntü arasında steganografi metriklerini hesaplar."""
+    """
+    Kapak ve stego görüntü arasındaki farkı 6 metrikle ölçer.
+
+    Metrikler:
+        MSE  - Ortalama Karesel Hata
+        PSNR - Tepe Sinyal Gürültü Oranı (dB)
+        AD   - Ortalama Fark
+        SC   - Yapısal İçerik
+        NCC  - Normalize Karşıt Korelasyon
+        NAE  - Normalize Mutlak Hata
+    """
     cover_f = cover.astype(np.float64)
     stego_f = stego.astype(np.float64)
     diff = cover_f - stego_f
@@ -97,14 +155,19 @@ def calculate_metrics(cover: np.ndarray, stego: np.ndarray) -> Dict[str, float]:
 
 
 def read_image_bgr(image_path: Path) -> np.ndarray | None:
-    """Unicode yollar dahil görüntüyü BGR 24bpp olarak okur."""
+    """
+    Diskten BGR formatında renkli görüntü okur.
+
+    cv2.imread yerine fromfile + imdecode kullanılır;
+    böylece Türkçe karakter içeren Windows yollarında da okuma yapılabilir.
+    """
     file_bytes = np.fromfile(str(image_path), dtype=np.uint8)
     image = cv2.imdecode(file_bytes, cv2.IMREAD_COLOR)
     return image
 
 
 def write_image_bgr(image_path: Path, image: np.ndarray) -> None:
-    """Unicode yollar dahil görüntüyü kayıpsız BMP olarak yazar."""
+    """BGR görüntüsünü kayıpsız BMP olarak diske yazar."""
     success, encoded = cv2.imencode(".bmp", image)
     if not success:
         raise RuntimeError(f"Görüntü kodlanamadı: {image_path}")
@@ -112,7 +175,15 @@ def write_image_bgr(image_path: Path, image: np.ndarray) -> None:
 
 
 def prepare_cover_from_array(image: np.ndarray) -> Tuple[np.ndarray, Tuple[int, int], str | None]:
-    """NumPy dizisinden kapak görüntüsü hazırlar; gerekirse 256x256'ya yeniden boyutlandırır."""
+    """
+    Bellekteki görüntüyü analize hazır kapak görüntüsüne dönüştürür.
+
+    - 3 kanallı olmayan görüntüler reddedilir
+    - 256x256 veya 512x512 değilse 256x256'ya küçültülür
+
+    Dönüş:
+        (kapak_görüntüsü, (genişlik, yükseklik), uyarı_mesajı veya None)
+    """
     if image is None:
         raise FileNotFoundError("Görüntü okunamadı.")
     if image.ndim != 3 or image.shape[2] != 3:
@@ -131,7 +202,7 @@ def prepare_cover_from_array(image: np.ndarray) -> Tuple[np.ndarray, Tuple[int, 
 
 
 def encode_image_bgr_bytes(image: np.ndarray) -> bytes:
-    """BGR görüntüsünü BMP bayt dizisine dönüştürür."""
+    """BGR görüntüsünü indirilebilir BMP bayt dizisine çevirir (arayüz indirme butonu için)."""
     success, encoded = cv2.imencode(".bmp", image)
     if not success:
         raise RuntimeError("Görüntü kodlanamadı.")
@@ -139,13 +210,13 @@ def encode_image_bgr_bytes(image: np.ndarray) -> bytes:
 
 
 def decode_image_bgr(data: bytes) -> np.ndarray | None:
-    """Bayt dizisinden BGR görüntü okur."""
+    """Yüklenen dosya baytlarından BGR görüntü okur (Streamlit file_uploader için)."""
     buffer = np.frombuffer(data, dtype=np.uint8)
     return cv2.imdecode(buffer, cv2.IMREAD_COLOR)
 
 
 def load_cover_image(image_path: Path) -> Tuple[np.ndarray, Tuple[int, int]]:
-    """Görüntüyü BGR 24bpp olarak yükler; gerekirse 256x256'ya yeniden boyutlandırır."""
+    """Dosya yolundan kapak görüntüsü yükler ve boyut kontrolü yapar."""
     image = read_image_bgr(image_path)
     if image is None:
         raise FileNotFoundError(f"Görüntü okunamadı: {image_path}")
@@ -158,13 +229,26 @@ def load_cover_image(image_path: Path) -> Tuple[np.ndarray, Tuple[int, int]]:
 
 
 def max_bit_capacity(image: np.ndarray) -> int:
-    """M x N x 3 formülüyle maksimum gizlenebilir bit sayısını döndürür."""
+    """
+    Görüntüye gizlenebilecek maksimum bit sayısını hesaplar.
+
+    Formül: genişlik x yükseklik x 3 (RGB kanalları)
+    """
     height, width = image.shape[:2]
     return height * width * 3
 
 
 def discover_test_images(test_root: Path) -> List[Path]:
-    """BMP/TIFF/PNG test görüntülerini bulur (alt klasör veya düz klasör yapısı)."""
+    """
+    Analiz edilecek renkli test görüntülerinin listesini oluşturur.
+
+    Arama sırası:
+        1. test_root/256x256 ve test_root/512x512 alt klasörleri (varsa)
+        2. Yoksa test_root klasörünün kendisi
+
+    Aynı isimde birden fazla format varsa BMP tercih edilir.
+    Gri tonlamalı ve okunamayan dosyalar atlanır.
+    """
     images: List[Path] = []
     seen: set[str] = set()
 
@@ -183,6 +267,7 @@ def discover_test_images(test_root: Path) -> List[Path]:
             for path in sorted(search_dir.rglob("*"))
             if path.is_file() and path.suffix.lower() in SUPPORTED_EXTENSIONS
         ]
+        # Aynı dosya adı için format önceliği: BMP > TIFF > PNG
         candidates.sort(
             key=lambda path: (
                 path.stem.lower(),
@@ -212,7 +297,12 @@ def save_metric_plots(
     results_by_size: Dict[str, Dict[int, Dict[str, float]]],
     output_dir: Path,
 ) -> None:
-    """Her metrik için kapasiteye karşı ayrı PNG grafik kaydeder."""
+    """
+    Her metrik için kapasiteye karşı ayrı çizgi grafiği üretir ve PNG kaydeder.
+
+    results_by_size yapısı:
+        {"256x256": {25: {"MSE": ..., "PSNR": ...}, 50: {...}, ...}, "512x512": {...}}
+    """
     output_dir.mkdir(parents=True, exist_ok=True)
     metric_names = ("MSE", "PSNR", "AD", "SC", "NCC", "NAE")
 
@@ -243,7 +333,12 @@ def save_metrics_csv(
     aggregated: Dict[str, Dict[int, Dict[str, float]]],
     output_dir: Path,
 ) -> None:
-    """Görüntü bazlı ve ortalama metrik sonuçlarını CSV olarak kaydeder."""
+    """
+    Metrik sonuçlarını iki CSV dosyasına yazar.
+
+    metrics_detailed.csv  -> her görüntü + kapasite kombinasyonu
+    metrics_averages.csv  -> 256x256 ve 512x512 grup ortalamaları
+    """
     output_dir.mkdir(parents=True, exist_ok=True)
     metric_names = ("MSE", "PSNR", "AD", "SC", "NCC", "NAE")
 
@@ -284,6 +379,7 @@ def save_metrics_csv(
 
 
 def parse_args() -> argparse.Namespace:
+    """Komut satırı argümanlarını okur (--input ile girdi klasörü)."""
     project_root = Path(__file__).resolve().parent
     default_input = project_root / "test_images"
     desktop_input = Path.home() / "OneDrive" / "Masaüstü" / "standard_test_images"
@@ -304,7 +400,17 @@ def run_batch_analysis(
     *,
     progress_callback=None,
 ) -> Tuple[List[Dict[str, object]], Dict[str, Dict[int, Dict[str, float]]]]:
-    """Tüm test görüntülerinde LSB analizi yapar ve çıktıları kaydeder."""
+    """
+    Tüm test görüntülerinde toplu LSB analizi çalıştırır.
+
+    Her görüntü için 4 kapasite seviyesinde (%25-%100):
+        gizle -> çıkar -> doğrula -> metrik hesapla -> stego kaydet
+
+    Ayrıca grup ortalamalarını hesaplayıp grafik ve CSV üretir.
+
+    progress_callback(step, total, image_name, capacity_pct):
+        İsteğe bağlı ilerleme bildirimi (CLI ve Streamlit tarafından kullanılır)
+    """
     stego_dir = output_root / "stego"
     plot_dir = output_root / "plots"
     metrics_dir = output_root / "metrics"
@@ -315,6 +421,8 @@ def run_batch_analysis(
     if not image_paths:
         raise FileNotFoundError(f"Renkli test görüntüsü bulunamadı: {test_root}")
 
+    # Her boyut grubu için sabit tohumlu rastgele bit havuzu üret
+    # Böylece aynı boyuttaki tüm görüntülere tutarlı veri gizlenir
     rng_by_size: Dict[Tuple[int, int], np.random.Generator] = {
         (256, 256): np.random.default_rng(256),
         (512, 512): np.random.default_rng(512),
@@ -325,6 +433,7 @@ def run_batch_analysis(
         capacity = size[0] * size[1] * 3
         full_random_bits[size] = generate_random_data(capacity, rng=rng_by_size[size])
 
+    # Ortalama metrik hesabı için biriktiriciler
     aggregated: Dict[str, Dict[int, Dict[str, float]]] = {
         "256x256": {capacity: {} for capacity in CAPACITY_LEVELS},
         "512x512": {capacity: {} for capacity in CAPACITY_LEVELS},
@@ -358,6 +467,7 @@ def run_batch_analysis(
         stem = image_path.stem
 
         for capacity_pct in CAPACITY_LEVELS:
+            # Kapasite yüzdesine göre gizlenecek bit sayısı
             bit_count = int(total_capacity * capacity_pct / 100)
             secret_bits = full_random_bits[size_key][:bit_count]
 
@@ -371,6 +481,7 @@ def run_batch_analysis(
 
             metrics = calculate_metrics(cover, stego)
 
+            # Ortalama hesabı için metrikleri topla
             for metric_name, value in metrics.items():
                 metric_sums[size_label][capacity_pct][metric_name] = (
                     metric_sums[size_label][capacity_pct].get(metric_name, 0.0) + value
@@ -395,6 +506,7 @@ def run_batch_analysis(
             if progress_callback:
                 progress_callback(step, total_steps, image_path.name, capacity_pct)
 
+    # Toplanan metrikleri görüntü sayısına bölerek ortalamaya çevir
     for size_label in aggregated:
         for capacity_pct in CAPACITY_LEVELS:
             count = metric_counts[size_label][capacity_pct]
@@ -412,6 +524,7 @@ def run_batch_analysis(
 
 
 def main() -> None:
+    """Komut satırı giriş noktası."""
     args = parse_args()
     project_root = Path(__file__).resolve().parent
     test_root = args.input.resolve()

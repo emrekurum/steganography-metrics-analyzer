@@ -1,4 +1,11 @@
-"""Streamlit arayüzü: LSB steganografi analizi."""
+"""
+Streamlit web arayüzü.
+
+lsb_steganography.py içindeki fonksiyonları kullanarak:
+- Tek görüntü analizi
+- Klasör bazlı toplu analiz
+sunar.
+"""
 
 from __future__ import annotations
 
@@ -31,10 +38,12 @@ OUTPUT_ROOT = PROJECT_ROOT / "output"
 
 
 def bgr_to_rgb(image: np.ndarray) -> np.ndarray:
+    """OpenCV BGR formatını ekranda göstermek için RGB'ye çevirir."""
     return cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
 
 
 def format_metric_value(name: str, value: float) -> str:
+    """Metrik değerini tabloda okunabilir metne dönüştürür."""
     if name == "PSNR" and value == float("inf"):
         return "∞"
     if name == "PSNR":
@@ -43,6 +52,7 @@ def format_metric_value(name: str, value: float) -> str:
 
 
 def render_metrics_table(metrics: dict[str, float]) -> None:
+    """Hesaplanan metrikleri Streamlit tablosu olarak gösterir."""
     rows = [
         {"Metrik": name, "Değer": format_metric_value(name, value)}
         for name, value in metrics.items()
@@ -54,6 +64,11 @@ def render_capacity_chart(
     aggregated: dict[str, dict[int, dict[str, float]]],
     metric_name: str,
 ) -> None:
+    """
+    Seçilen metrik için kapasiteye karşı çizgi grafiği çizer.
+
+    256x256 ve 512x512 grupları ayrı eğriler olarak gösterilir.
+    """
     fig, ax = plt.subplots(figsize=(7, 4))
 
     for size_label, capacity_metrics in aggregated.items():
@@ -72,6 +87,12 @@ def render_capacity_chart(
 
 
 def single_image_tab() -> None:
+    """
+    Tek görüntü sekmesi.
+
+    Kullanıcı bir kapak görüntüsü yükler, kapasite seçer ve
+    gizleme + metrik analizi sonuçlarını anında görür.
+    """
     st.subheader("Tek Görüntü Analizi")
 
     uploaded = st.file_uploader(
@@ -110,6 +131,7 @@ def single_image_tab() -> None:
         st.warning(resize_note)
 
     if st.button("Gizle ve Analiz Et", type="primary"):
+        # Seçilen kapasite kadar rastgele bit üret ve gizle
         secret_bits = generate_random_data(total_capacity, rng=np.random.default_rng(int(seed)))
         secret_bits = secret_bits[:bit_count]
 
@@ -118,6 +140,7 @@ def single_image_tab() -> None:
         metrics = calculate_metrics(cover, stego)
         verified = bool(np.array_equal(secret_bits, extracted))
 
+        # Sonuçları oturum hafızasında sakla (sayfa yenilense bile görüntülenebilsin)
         st.session_state["single_result"] = {
             "cover": cover,
             "stego": stego,
@@ -164,6 +187,12 @@ def single_image_tab() -> None:
 
 
 def batch_analysis_tab() -> None:
+    """
+    Toplu analiz sekmesi.
+
+    Belirtilen klasördeki tüm uygun görüntülerde analiz çalıştırır,
+    tablo/grafik/CSV sonuçlarını gösterir.
+    """
     st.subheader("Toplu Analiz")
 
     default_path = str(DEFAULT_INPUT if DEFAULT_INPUT.exists() else PROJECT_ROOT / "test_images")
@@ -238,9 +267,10 @@ def batch_analysis_tab() -> None:
 
 
 def main() -> None:
+    """Arayüz düzenini oluşturur ve sekmeleri başlatır."""
     st.set_page_config(
         page_title="LSB Steganografi Analizörü",
-        page_icon="🖼️",
+        page_icon=":frame_with_picture:",
         layout="wide",
     )
 
