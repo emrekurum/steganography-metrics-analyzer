@@ -111,28 +111,50 @@ def write_image_bgr(image_path: Path, image: np.ndarray) -> None:
     encoded.tofile(str(image_path))
 
 
+def prepare_cover_from_array(image: np.ndarray) -> Tuple[np.ndarray, Tuple[int, int], str | None]:
+    """NumPy dizisinden kapak görüntüsü hazırlar; gerekirse 256x256'ya yeniden boyutlandırır."""
+    if image is None:
+        raise FileNotFoundError("Görüntü okunamadı.")
+    if image.ndim != 3 or image.shape[2] != 3:
+        raise ValueError("Görüntü 24bpp renkli (H x W x 3) olmalıdır.")
+
+    height, width = image.shape[:2]
+    current_size = (width, height)
+    resize_note = None
+
+    if current_size not in EXPECTED_SIZES:
+        resize_note = f"Boyut {width}x{height}; otomatik olarak 256x256'ya yeniden boyutlandırıldı."
+        image = cv2.resize(image, (256, 256), interpolation=cv2.INTER_AREA)
+        current_size = (256, 256)
+
+    return image, current_size, resize_note
+
+
+def encode_image_bgr_bytes(image: np.ndarray) -> bytes:
+    """BGR görüntüsünü BMP bayt dizisine dönüştürür."""
+    success, encoded = cv2.imencode(".bmp", image)
+    if not success:
+        raise RuntimeError("Görüntü kodlanamadı.")
+    return encoded.tobytes()
+
+
+def decode_image_bgr(data: bytes) -> np.ndarray | None:
+    """Bayt dizisinden BGR görüntü okur."""
+    buffer = np.frombuffer(data, dtype=np.uint8)
+    return cv2.imdecode(buffer, cv2.IMREAD_COLOR)
+
+
 def load_cover_image(image_path: Path) -> Tuple[np.ndarray, Tuple[int, int]]:
     """Görüntüyü BGR 24bpp olarak yükler; gerekirse 256x256'ya yeniden boyutlandırır."""
     image = read_image_bgr(image_path)
     if image is None:
         raise FileNotFoundError(f"Görüntü okunamadı: {image_path}")
 
-    if image.ndim != 3 or image.shape[2] != 3:
-        raise ValueError(f"{image_path.name} 24bpp renkli görüntü değil; atlanmalı.")
+    cover, current_size, resize_note = prepare_cover_from_array(image)
+    if resize_note:
+        warnings.warn(f"{image_path.name}: {resize_note}", UserWarning, stacklevel=2)
 
-    height, width = image.shape[:2]
-    current_size = (width, height)
-
-    if current_size not in EXPECTED_SIZES:
-        warnings.warn(
-            f"{image_path.name} boyutu {width}x{height}; otomatik olarak 256x256'ya yeniden boyutlandırılıyor.",
-            UserWarning,
-            stacklevel=2,
-        )
-        image = cv2.resize(image, (256, 256), interpolation=cv2.INTER_AREA)
-        current_size = (256, 256)
-
-    return image, current_size
+    return cover, current_size
 
 
 def max_bit_capacity(image: np.ndarray) -> int:
@@ -276,28 +298,22 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def main() -> None:
-    args = parse_args()
-    project_root = Path(__file__).resolve().parent
-    test_root = args.input.resolve()
-    stego_dir = project_root / "output" / "stego"
-    plot_dir = project_root / "output" / "plots"
-    metrics_dir = project_root / "output" / "metrics"
+def run_batch_analysis(
+    test_root: Path,
+    output_root: Path,
+    *,
+    progress_callback=None,
+) -> Tuple[List[Dict[str, object]], Dict[str, Dict[int, Dict[str, float]]]]:
+    """Tüm test görüntülerinde LSB analizi yapar ve çıktıları kaydeder."""
+    stego_dir = output_root / "stego"
+    plot_dir = output_root / "plots"
+    metrics_dir = output_root / "metrics"
 
     stego_dir.mkdir(parents=True, exist_ok=True)
 
-    if not test_root.exists():
-        raise FileNotFoundError(f"Girdi klasörü bulunamadı: {test_root}")
-
-    print(f"Girdi klasörü: {test_root}")
     image_paths = discover_test_images(test_root)
     if not image_paths:
-        raise FileNotFoundError(
-            f"Renkli test görüntüsü bulunamadı: {test_root}\n"
-            "BMP/TIFF/PNG dosyalarını bu klasöre koyun veya `--input` ile yolu belirtin."
-        )
-
-    print(f"Bulunan görüntü sayısı: {len(image_paths)}")
+        raise FileNotFoundError(f"Renkli test görüntüsü bulunamadı: {test_root}")
 
     rng_by_size: Dict[Tuple[int, int], np.random.Generator] = {
         (256, 256): np.random.default_rng(256),
@@ -323,26 +339,22 @@ def main() -> None:
     }
     detailed_rows: List[Dict[str, object]] = []
 
+    total_steps = len(image_paths) * len(CAPACITY_LEVELS)
+    step = 0
+
     for image_path in image_paths:
         try:
             cover, (width, height) = load_cover_image(image_path)
-        except ValueError as exc:
-            warnings.warn(str(exc), UserWarning, stacklevel=2)
+        except ValueError:
             continue
+
         size_key = (width, height)
         size_label = f"{width}x{height}"
 
         if size_key not in full_random_bits:
-            warnings.warn(
-                f"{image_path.name} beklenmeyen boyutta ({width}x{height}); atlanıyor.",
-                UserWarning,
-                stacklevel=2,
-            )
             continue
 
         total_capacity = max_bit_capacity(cover)
-        print(f"\n[{image_path.name}] boyut={width}x{height}, maksimum bit kapasitesi={total_capacity}")
-
         stem = image_path.stem
 
         for capacity_pct in CAPACITY_LEVELS:
@@ -358,11 +370,6 @@ def main() -> None:
                 )
 
             metrics = calculate_metrics(cover, stego)
-            print(
-                f"  %{capacity_pct:3d} -> MSE={metrics['MSE']:.6f}, PSNR={metrics['PSNR']:.2f} dB, "
-                f"AD={metrics['AD']:.6f}, SC={metrics['SC']:.6f}, "
-                f"NCC={metrics['NCC']:.6f}, NAE={metrics['NAE']:.6f}"
-            )
 
             for metric_name, value in metrics.items():
                 metric_sums[size_label][capacity_pct][metric_name] = (
@@ -382,9 +389,11 @@ def main() -> None:
             )
 
             output_name = f"stego_{capacity_pct}_{width}x{height}_{stem}.bmp"
-            output_path = stego_dir / output_name
-            write_image_bgr(output_path, stego)
-            print(f"  Stego kaydedildi: {output_path}")
+            write_image_bgr(stego_dir / output_name, stego)
+
+            step += 1
+            if progress_callback:
+                progress_callback(step, total_steps, image_path.name, capacity_pct)
 
     for size_label in aggregated:
         for capacity_pct in CAPACITY_LEVELS:
@@ -398,6 +407,34 @@ def main() -> None:
 
     save_metric_plots(aggregated, plot_dir)
     save_metrics_csv(detailed_rows, aggregated, metrics_dir)
+
+    return detailed_rows, aggregated
+
+
+def main() -> None:
+    args = parse_args()
+    project_root = Path(__file__).resolve().parent
+    test_root = args.input.resolve()
+    output_root = project_root / "output"
+
+    if not test_root.exists():
+        raise FileNotFoundError(f"Girdi klasörü bulunamadı: {test_root}")
+
+    image_paths = discover_test_images(test_root)
+    if not image_paths:
+        raise FileNotFoundError(f"Renkli test görüntüsü bulunamadı: {test_root}")
+
+    print(f"Girdi klasörü: {test_root}")
+    print(f"Bulunan görüntü sayısı: {len(image_paths)}")
+
+    def log_progress(step: int, total: int, image_name: str, capacity_pct: int) -> None:
+        print(f"[{step}/{total}] {image_name} - %{capacity_pct}")
+
+    run_batch_analysis(
+        test_root,
+        output_root,
+        progress_callback=log_progress,
+    )
     print("\nTüm işlemler tamamlandı.")
 
 
