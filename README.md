@@ -150,11 +150,6 @@ Varsayılan girdi klasörü sırasıyla şunlardır:
 python lsb_steganography.py
 ```
 
-### Özel girdi klasörü
-
-```powershell
-python lsb_steganography.py --input "C:\Users\emrek\OneDrive\Masaüstü\standard_test_images"
-```
 
 ### İşlem akışı
 
